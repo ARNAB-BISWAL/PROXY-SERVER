@@ -30,6 +30,9 @@ class HttpRequest {
 
 class handleClient implements Runnable{
     Socket clientSocket;
+
+    static Cache cache = new Cache();
+    
     handleClient(Socket clientSocket) {
         this.clientSocket = clientSocket;
     }
@@ -90,12 +93,20 @@ class handleClient implements Runnable{
                 host = hostParts[0];
                 port = Integer.parseInt(hostParts[1]);
             }
-            // Connect to website
+
+            String cacheKey = Cache.keyFor(request.method, host + request.path);
+            CacheEntry cached = cache.lookup(cacheKey);
+            if (cached != null) {
+                System.out.println("CACHE HIT for " + cacheKey);
+                clientOut.write(cached.response);
+                clientOut.flush();
+                return; 
+            }
+            System.out.println("CACHE MISS for " + cacheKey);
             Socket serverSocket = new Socket(host, port);
             System.out.println("Connected to: " + host);
             OutputStream serverOut = serverSocket.getOutputStream();
             InputStream serverIn = serverSocket.getInputStream();
-            // Send request to website
             StringBuilder requestText = new StringBuilder();
             requestText.append(request.method)
                     .append(" ")
@@ -114,13 +125,23 @@ class handleClient implements Runnable{
             serverOut.write(requestText.toString().getBytes());
             serverOut.flush();
 
+            ByteArrayOutputStream responseBuffer = new ByteArrayOutputStream();
             // Receive response and send it to browser
             byte[] buffer = new byte[8192];
             int bytesRead;
-
             while ((bytesRead = serverIn.read(buffer)) != -1) {
-                clientOut.write(buffer, 0, bytesRead);
-                clientOut.flush();
+                responseBuffer.write(buffer, 0, bytesRead);
+            }
+            
+            byte[] fullResponse = responseBuffer.toByteArray();
+            
+            clientOut.write(fullResponse);
+            clientOut.flush();
+            
+             int statusCode = parseStatusCode(fullResponse);
+            if (CachePolicy.isCacheable(request.method, statusCode)) {
+                cache.store(cacheKey, fullResponse);
+                System.out.println("Stored in cache: " + cacheKey);
             }
 
             serverSocket.close();
@@ -139,7 +160,20 @@ class handleClient implements Runnable{
             }
         }
     }
+     private static int parseStatusCode(byte[] response) {
+        try {
+            String text = new String(response);
+            int firstLineEnd = text.indexOf("\r\n");
+            String statusLine = firstLineEnd == -1 ? text : text.substring(0, firstLineEnd);
+            String[] parts = statusLine.split(" ");
+            return parts.length >= 2 ? Integer.parseInt(parts[1]) : -1;
+        } catch (Exception e) {
+            return -1;
+        }
+    }
 }
+  
+
 
 public class Main {
     public static void main(String[] args) throws IOException {
