@@ -29,14 +29,25 @@ class HttpRequest {
 }
 
 class handleClient implements Runnable{
+    private final Socket clientSocket;
+    private final AccessController accessController;
     Socket clientSocket;
-
     static Cache cache = new Cache();
+    static PerformanceMetrics metrics = new PerformanceMetrics();
     
     handleClient(Socket clientSocket) {
         this.clientSocket = clientSocket;
+         this.accessController = accessController;
     }
    public void run(){
+       long startTime = System.currentTimeMillis();
+        String clientIp = clientSocket.getInetAddress().getHostAddress();
+        String method = "-";
+        String url = "-";
+        int statusCode = -1;
+        Boolean cacheHit = null;
+        boolean allowed = false;
+
         try{
             clientSocket.setSoTimeout(80000);
             BufferedReader in= new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
@@ -49,10 +60,12 @@ class handleClient implements Runnable{
             }
             String[] parts = firstLine.split(" ");
             if (parts.length != 3) {
+                 sendError(clientOut, 400, "Bad Request");
+                statusCode = 400;
                 return;
             }
-            HttpRequest request =
-                    new HttpRequest(parts[0], parts[1], parts[2]);
+            HttpRequest request = new HttpRequest(parts[0], parts[1], parts[2]);
+             method = request.method;
             // Read headers
             
             String line;
@@ -66,10 +79,38 @@ class handleClient implements Runnable{
                     request.headers.put(key, value);
                 }
             }
+           
+            
             System.out.println("Method: " + request.method);
             System.out.println("Path: " + request.path);
             System.out.println("Version: " + request.version);
             System.out.println("Host: " + request.headers.get("Host"));
+
+            if (!accessController.isAllowed(host, request.path)) {
+                sendError(clientOut, 403, "Access denied");
+                statusCode = 403;
+                allowed = false;
+                return;
+            }
+            allowed = true;
+
+            if (!request.method.equalsIgnoreCase("GET")) {
+                sendError(clientOut, 501, "Only GET supported");
+                statusCode = 501;
+                return;
+            }
+
+            if (host == null) {
+                sendError(clientOut, 400, "Host header required");
+                statusCode = 400;
+                return;
+            }
+                 int port = 80;
+                if (host.contains(":")) {
+                    String[] hostParts = host.split(":", 2);
+                    host = hostParts[0];
+                    port = Integer.parseInt(hostParts[1]);
+            }
 
             if (!request.method.equals("GET")) {
                 String response =
@@ -178,13 +219,14 @@ class handleClient implements Runnable{
 public class Main {
     public static void main(String[] args) throws IOException {
         ServerSocket serverSocket= new ServerSocket(8081);
+        AccessController accessController = new AccessController();
         System.out.println("Server is running...");
         ExecutorService executor= Executors.newFixedThreadPool(10);
         while(true){
             Socket clientSocket= serverSocket.accept();
             System.out.println("Client connected");
             executor.execute(
-                new handleClient(clientSocket));
+                new handleClient(clientSocket, accessController));
             }
            }
 
